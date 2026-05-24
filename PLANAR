@@ -1,0 +1,204 @@
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h> 
+
+LiquidCrystal_I2C lcd(0x27,20,4);  // set the LCD address to 0x27 for a 20 chars and 4 line display
+
+#define STEPX_PIN 9
+#define DIRX_PIN 5
+#define STEPY_PIN 8
+#define DIRY_PIN 6
+#define STEPZ_PIN 4
+#define DIRZ_PIN 7
+
+#define LIMB_X 2  //limit button for X
+#define LIMB_Y 3  //limit button for Y
+#define Zbtn 1    //Button for starting z movement
+
+int spin = 200;
+const int VRX_PIN = A0;
+const int VRY_PIN = A1;
+
+// State:
+int FORWARDS = 1;
+int IDLE = 0;
+int BACKWARDS = -1;
+
+bool lastXdirection = HIGH; // remembers the last X dir, so when a limb is hit we can move in opposite dir.
+bool lastYdirection = HIGH; // remembers the last Y dir, so when a limb is hit we can move in opposite dir.
+bool xLimitHandled = false; // true after reacting to the current X limb press; reset when switch is released.
+bool yLimitHandled = false; // true after reacting to the current Y limb press; reset when switch is released.
+
+void setup() {
+  pinMode(STEPX_PIN, OUTPUT); //set pin modes
+  pinMode(DIRX_PIN, OUTPUT);
+  pinMode(STEPY_PIN, OUTPUT);
+  pinMode(DIRY_PIN, OUTPUT);
+
+  pinMode(LIMB_X, INPUT_PULLUP);  //limit buttons
+  pinMode(LIMB_Y, INPUT_PULLUP);
+  pinMode(Zbtn, INPUT_PULLUP); 
+
+  Serial.begin(9600);
+  lcd.init();
+  lcd.backlight();
+
+  // LCD prints name of project, then starts countdown until program starts:
+  lcd.setCursor(7,1);
+  lcd.print("PLANAR"); 
+  delay(2000);
+  lcd.clear();
+  //4 secs before program runs
+  lcd.setCursor(8,1);
+  lcd.print("3...");
+  delay(1000);
+  lcd.clear();
+  lcd.setCursor(8,1);
+  lcd.print("2...");
+  delay(1000);
+  lcd.clear();
+  lcd.setCursor(8,1);
+  lcd.print("1...");
+  delay(1000);
+  lcd.clear();
+  lcd.setCursor(7,1);
+  lcd.print("START!");
+  delay(1000);
+  lcd.clear();
+  lcd.setCursor(7,1);
+  lcd.print("(^ u ^)");
+}
+
+void loop() {
+  
+  bool xLimitPressed = digitalRead(LIMB_X) == HIGH; //N.C. limit switches: HIGH means pressed/open
+  bool yLimitPressed = digitalRead(LIMB_Y) == HIGH;
+
+//"escape" if's:
+  if (xLimitPressed && !xLimitHandled) {      // condition: if(true && true), so "escape" happens only once for a limit press
+    xLimitHandled = true;                     // set x handled to true so "escape" only runs once. now it's: if(true && false)
+    ENGINE(true, 500, 300, !lastXdirection, false);  // move a few steps in opposite dir from xlimb, and seperate escape move from joystick move w/ false
+    return;                                   // skip joystick controlled movement for the rest of this loop
+  }
+
+  if(!xLimitPressed) {
+    xLimitHandled = false;         //switch released -> allow the next press to trigger "escape"
+  }   
+
+  if (yLimitPressed && !yLimitHandled) {      
+    yLimitHandled = true;
+    ENGINE(false, 500, 300, !lastYdirection, false);
+    return;
+  }
+
+  if(!yLimitPressed) {
+    yLimitHandled = false;
+  }
+  
+//joystick controlled movement:
+  int x = analogRead(VRX_PIN); //set integers for analog reads of the joystick (XY)
+  int y = analogRead(VRY_PIN);
+  MOVE (true, checkMovement(x));  // true = X axis
+  MOVE (false, checkMovement(y)); //false = Y axis
+
+    /*Serial.print("VRX_PIN :");
+    Serial.println(x);
+    delayMicroseconds(100);
+    Serial.print("VRY_PIN :");
+    Serial.println(y);
+    delayMicroseconds(100);*/
+  
+}
+
+void MOVE(bool isX, int axis) { //moving on an axis, which one?
+
+  if (axis == FORWARDS) {         //if axis = 1, move in HIGH direction
+
+    if(isX) {
+      lastXdirection = HIGH;
+    }else{
+      lastYdirection = LOW;
+    }
+  
+    ENGINE(isX, spin, 500, HIGH, true); //true meaning a part of joystick movement and does not "ignore" when limit is pressed
+    //ENGINE(false, spin, 500, LOW, true);
+
+  } else if (axis == BACKWARDS) { // if axis = -1, move in LOW direction
+
+    if(isX) {
+      lastXdirection = LOW;
+    }else{
+      lastYdirection = HIGH;
+    }
+
+    ENGINE(isX, spin, 500, LOW, true);
+    //ENGINE(false, spin, 500, HIGH, true);
+  }
+}
+
+
+int checkMovement(int joy) { //"integer function" because she returns values 1/0/-1
+
+  if(joy > 600) {
+    return FORWARDS; //1
+  } else if (joy < 400) {
+    return BACKWARDS; //-1
+  } else { // meaning - if 400 < joy < 600
+    return IDLE; //0
+  }
+}
+
+void ENGINE(bool isX, int steps, int speed, bool direction, bool checkLimit) {
+
+  int dirPin = isX ? DIRX_PIN : DIRY_PIN;
+  int stepPin = isX ? STEPX_PIN : STEPY_PIN;
+  int limitPin = isX ? LIMB_X : LIMB_Y;
+  //can do serial print for this
+
+  digitalWrite(dirPin, direction); //inserts every cycle HIGH/LOW based on joy movement (frwrds/bkwrds/idle)
+  for(int i = 0; i < steps; i++){
+
+  bool limitPressed = digitalRead(limitPin) == HIGH;
+
+  if(checkLimit) { // seperates into two types of movement - joystick and escape, so escape can work even when stopping ENGINE();
+      if(limitPressed){
+        return; // stops motor immediately without waiting for 500 steps (from joystick) to finish
+      }
+    }
+
+    engineCycle(stepPin, speed);
+  }
+}
+
+void engineCycle(int ste, int spe) {  // one step/pulse sequence for the motors
+  digitalWrite(ste, HIGH);
+  delayMicroseconds(spe);
+  digitalWrite(ste, LOW);
+  delayMicroseconds(spe);
+}
+
+
+void analogvalues() {  // print on LCD x,y analog joystick values
+
+  lcd.setCursor(6, 0);
+  lcd.print("X  |  Y");
+  lcd.setCursor(9,1);
+  lcd.print("|");
+  lcd.setCursor(9,2);
+  lcd.print("|");
+  lcd.setCursor(9,3);
+  lcd.print("|");
+
+  lcd.setCursor(5, 2);
+  lcd.print(analogRead(VRX_PIN));
+  if (analogRead(VRX_PIN) < 1000) {  // fixed numbers bug
+    lcd.setCursor(8, 2);
+    lcd.print(" ");
+  }
+
+  lcd.setCursor(11, 2);
+  lcd.print(analogRead(VRY_PIN));
+  if (analogRead(VRY_PIN) < 1000) {  // fixed numbers bug
+    lcd.setCursor(14, 2);
+    lcd.print(" ");
+  }
+}
