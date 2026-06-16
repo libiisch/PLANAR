@@ -265,8 +265,6 @@ void homeXY() {
       yDone = true;
     }
   }
-
-
 }
 
 void openClaw() {
