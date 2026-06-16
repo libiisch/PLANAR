@@ -1,22 +1,32 @@
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h> 
+#include <Servo.h>
 
 LiquidCrystal_I2C lcd(0x27,20,4);  // set the LCD address to 0x27 for a 20 chars and 4 line display
 
-#define STEPX_PIN 9
+#define STEPX_PIN 9 //x axis motor
 #define DIRX_PIN 5
-#define STEPY_PIN 8
+#define STEPY_PIN 8 //y axis motor
 #define DIRY_PIN 6
-#define STEPZ_PIN 4
+#define STEPZ_PIN 4 //z axis motor
 #define DIRZ_PIN 7
 
 #define LIMB_X 2  //limit button for X
 #define LIMB_Y 3  //limit button for Y
-#define Zbtn 1    //Button for starting z movement
+#define ZBTN 12   //Button for starting z movement
+
+Servo myServo;    //creates an object for servo type
+int currentAngle = 80; // Stores the last angle we told the servo to go to
+
+int lastZbuttonState = HIGH;            // Stores previous button state so we can detect changes
+unsigned long lastDebounceTime = 0;     // Stores last time the button press was accepted
+const unsigned long debounceDelay = 50; // Stores previous button state so we can detect changes
 
 int spin = 200;
-const int VRX_PIN = A0;
-const int VRY_PIN = A1;
+const int JOY_RIGHT = A0; //white
+const int JOY_LEFT  = A3; //yellow
+const int JOY_UP    = A1; //orange
+const int JOY_DOWN  = A2; //brown
 
 // State:
 int FORWARDS = 1;
@@ -33,39 +43,30 @@ void setup() {
   pinMode(DIRX_PIN, OUTPUT);
   pinMode(STEPY_PIN, OUTPUT);
   pinMode(DIRY_PIN, OUTPUT);
+  pinMode(STEPZ_PIN, OUTPUT);
+  pinMode(DIRZ_PIN, OUTPUT);
 
   pinMode(LIMB_X, INPUT_PULLUP);  //limit buttons
   pinMode(LIMB_Y, INPUT_PULLUP);
-  pinMode(Zbtn, INPUT_PULLUP); 
+
+  pinMode(ZBTN, INPUT_PULLUP); //claw move button
+
+  //joystick switches
+  pinMode(JOY_RIGHT, INPUT_PULLUP); // y directions
+  pinMode(JOY_LEFT, INPUT_PULLUP);
+  pinMode(JOY_UP, INPUT_PULLUP);    // x directons
+  pinMode(JOY_DOWN, INPUT_PULLUP);
 
   Serial.begin(9600);
   lcd.init();
   lcd.backlight();
 
-  // LCD prints name of project, then starts countdown until program starts:
-  lcd.setCursor(7,1);
-  lcd.print("PLANAR"); 
-  delay(2000);
-  lcd.clear();
-  //4 secs before program runs
-  lcd.setCursor(8,1);
-  lcd.print("3...");
-  delay(1000);
-  lcd.clear();
-  lcd.setCursor(8,1);
-  lcd.print("2...");
-  delay(1000);
-  lcd.clear();
-  lcd.setCursor(8,1);
-  lcd.print("1...");
-  delay(1000);
-  lcd.clear();
-  lcd.setCursor(7,1);
-  lcd.print("START!");
-  delay(1000);
-  lcd.clear();
-  lcd.setCursor(7,1);
-  lcd.print("(^ u ^)");
+  myServo.attach(11); //servo pin
+
+  moveServo(60); //move servo to starting position; closed claw
+  //printServoAngle();
+
+  Serial.println("setup done");
 }
 
 void loop() {
@@ -73,10 +74,16 @@ void loop() {
   bool xLimitPressed = digitalRead(LIMB_X) == HIGH; //N.C. limit switches: HIGH means pressed/open
   bool yLimitPressed = digitalRead(LIMB_Y) == HIGH;
 
+  if(checkZButtonPressed()) {
+    runSequence();
+    homeXY();
+    openClaw();
+  }
+
 //"escape" if's:
   if (xLimitPressed && !xLimitHandled) {      // condition: if(true && true), so "escape" happens only once for a limit press
     xLimitHandled = true;                     // set x handled to true so "escape" only runs once. now it's: if(true && false)
-    ENGINE(true, 500, 300, !lastXdirection, false);  // move a few steps in opposite dir from xlimb, and seperate escape move from joystick move w/ false
+    ENGINE(true, 150, 300, !lastXdirection, false);  // move a few steps in opposite dir from xlimb, and seperate escape move from joystick move w/ false
     return;                                   // skip joystick controlled movement for the rest of this loop
   }
 
@@ -86,26 +93,17 @@ void loop() {
 
   if (yLimitPressed && !yLimitHandled) {      
     yLimitHandled = true;
-    ENGINE(false, 500, 300, !lastYdirection, false);
+    ENGINE(false, 150, 300, !lastYdirection, false);
     return;
   }
 
   if(!yLimitPressed) {
     yLimitHandled = false;
   }
-  
-//joystick controlled movement:
-  int x = analogRead(VRX_PIN); //set integers for analog reads of the joystick (XY)
-  int y = analogRead(VRY_PIN);
-  MOVE (true, checkMovement(x));  // true = X axis
-  MOVE (false, checkMovement(y)); //false = Y axis
 
-    /*Serial.print("VRX_PIN :");
-    Serial.println(x);
-    delayMicroseconds(100);
-    Serial.print("VRY_PIN :");
-    Serial.println(y);
-    delayMicroseconds(100);*/
+  // arcade joystick controlled movement:
+  MOVE(true, checkButtonMovement(JOY_DOWN, JOY_UP)); // X axis = true
+  MOVE(false, checkButtonMovement(JOY_RIGHT, JOY_LEFT));   // Y axis = false
   
 }
 
@@ -116,34 +114,33 @@ void MOVE(bool isX, int axis) { //moving on an axis, which one?
     if(isX) {
       lastXdirection = HIGH;
     }else{
-      lastYdirection = LOW;
+      lastYdirection = HIGH;
     }
   
     ENGINE(isX, spin, 500, HIGH, true); //true meaning a part of joystick movement and does not "ignore" when limit is pressed
-    //ENGINE(false, spin, 500, LOW, true);
 
   } else if (axis == BACKWARDS) { // if axis = -1, move in LOW direction
 
     if(isX) {
       lastXdirection = LOW;
     }else{
-      lastYdirection = HIGH;
+      lastYdirection = LOW;
     }
 
     ENGINE(isX, spin, 500, LOW, true);
-    //ENGINE(false, spin, 500, HIGH, true);
   }
 }
 
+int checkButtonMovement(int forwardPin, int backwardPin) {
+  bool forwardPressed = digitalRead(forwardPin) == HIGH;
+  bool backwardPressed = digitalRead(backwardPin) == HIGH;
 
-int checkMovement(int joy) { //"integer function" because she returns values 1/0/-1
-
-  if(joy > 600) {
-    return FORWARDS; //1
-  } else if (joy < 400) {
-    return BACKWARDS; //-1
-  } else { // meaning - if 400 < joy < 600
-    return IDLE; //0
+  if (forwardPressed && !backwardPressed) {
+    return FORWARDS;
+  } else if (backwardPressed && !forwardPressed) {
+    return BACKWARDS;
+  } else {
+    return IDLE;
   }
 }
 
@@ -169,6 +166,119 @@ void ENGINE(bool isX, int steps, int speed, bool direction, bool checkLimit) {
   }
 }
 
+void moveServo(int angle) { 
+  myServo.write(angle); //move servo to inputted angle
+  currentAngle = angle; //remember where we told it to go
+}
+
+void printServoAngle() { //optional debugging fuction for servo (prints current angle)
+  Serial.print("servo angle: ");
+  Serial.println(currentAngle);
+}
+
+bool checkZButtonPressed() {            //debouncer for ZBTN
+  int currentState = digitalRead(ZBTN); //read current state of ZBTN = high/low
+
+  if (lastZbuttonState == LOW && currentState == HIGH) { //detect if the button is pressed
+
+    // debounce check
+    if (millis() - lastDebounceTime > debounceDelay) {
+      lastDebounceTime = millis();
+      lastZbuttonState = currentState;
+      return true;  // valid press detected
+    }
+  }
+
+  lastZbuttonState = currentState;
+  return false;
+}
+
+void ZACTIVE(int dirPin, int stepPin, int steps, int speed, int direction) {
+
+  digitalWrite(dirPin, direction); //set direction HIGH/LOW
+
+  for(int i = 0; i < steps; i++) {
+    engineCycle(stepPin, speed);
+  }
+}
+
+void runSequence() { //claw opening and closing fuction
+
+  // Stepper forward -> down z axis
+  ZACTIVE(DIRZ_PIN, STEPZ_PIN, 3000, 500, HIGH);
+
+  delay(1000);
+
+  // Servo move to opened claw
+  moveServo(10);
+
+  delay(1000);
+
+  // Stepper again
+  ZACTIVE(DIRZ_PIN, STEPZ_PIN, 800, 500, HIGH);
+
+  // Servo back to closed claw
+  moveServo(60);
+
+  delay(1000);
+
+  // Stepper reverse -> up z axis
+  ZACTIVE(DIRZ_PIN, STEPZ_PIN, 4000, 500, LOW);
+
+  delay(1000);
+
+  //after doing claw sequence, move to "home" sequence:
+  ENGINE(true, spin, 500, LOW, true); //move left on x axis a certain amount of steps(ntc!) until reaching limbx
+
+}
+
+void homeXY() {
+
+  bool xDone = false;
+
+  while (!xDone) {
+
+    bool xLimit = digitalRead(LIMB_X) == HIGH;
+
+    if (!xLimit) {
+      ENGINE(true, 1, 400, HIGH, true);
+    } 
+    else {
+      ENGINE(true, 200, 300, LOW, false);
+      xDone = true;
+    }
+  }
+
+  delay(200);
+
+  bool yDone = false;
+
+  while (!yDone) {
+
+    bool yLimit = digitalRead(LIMB_Y) == HIGH;
+
+    if (!yLimit) {
+      ENGINE(false, 1, 400, LOW, true);
+    } 
+    else {
+      ENGINE(false, 200, 300, HIGH , false);
+      yDone = true;
+    }
+  }
+
+
+}
+
+void openClaw() {
+  
+  moveServo(0);
+  delay(1000);
+
+  moveServo(80);
+  delay(1000);
+}
+
+
 void engineCycle(int ste, int spe) {  // one step/pulse sequence for the motors
   digitalWrite(ste, HIGH);
   delayMicroseconds(spe);
@@ -176,29 +286,3 @@ void engineCycle(int ste, int spe) {  // one step/pulse sequence for the motors
   delayMicroseconds(spe);
 }
 
-
-void analogvalues() {  // print on LCD x,y analog joystick values
-
-  lcd.setCursor(6, 0);
-  lcd.print("X  |  Y");
-  lcd.setCursor(9,1);
-  lcd.print("|");
-  lcd.setCursor(9,2);
-  lcd.print("|");
-  lcd.setCursor(9,3);
-  lcd.print("|");
-
-  lcd.setCursor(5, 2);
-  lcd.print(analogRead(VRX_PIN));
-  if (analogRead(VRX_PIN) < 1000) {  // fixed numbers bug
-    lcd.setCursor(8, 2);
-    lcd.print(" ");
-  }
-
-  lcd.setCursor(11, 2);
-  lcd.print(analogRead(VRY_PIN));
-  if (analogRead(VRY_PIN) < 1000) {  // fixed numbers bug
-    lcd.setCursor(14, 2);
-    lcd.print(" ");
-  }
-}
