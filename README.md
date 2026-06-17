@@ -3,7 +3,7 @@
 https://youtube.com/shorts/2GJgtLnBqJI?si=
 
 הצלחת sequence & homing:
-https://youtube.com/shorts/s00IbjViIFU?si=1J9I-0mAQxKfvWB8
+https://youtube.com/shorts/s00IbjViIFU?si=
 
 הצלחת הצבת:
-https://youtube.com/shorts/wjaEJfRBWOA?si=7BYyqxMAdohpxgMX
+https://youtube.com/shorts/wjaEJfRBWOA?si=
